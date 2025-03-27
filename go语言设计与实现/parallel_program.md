@@ -86,3 +86,163 @@ func main() {
 
 ## 6.1.3 小结
 Go 语言中的 context.Context 的主要作用还是在多个 Goroutine 组成的树中同步取消信号以减少对资源的消耗和占用，虽然它也有传值的功能，但是这个功能我们还是很少用到。
+
+## 6.2 同步原语和锁
+Golang 作为一个原生支持用户态进程的语言，当提到并发，肯定少不了锁。锁是并发编程中的同步原语。
+
+### 6.2.1 基本原语
+Golang 在 sync 包中提供了用于同步的基本原语，如sync.Mutex、sync.RWMutex、sync.WaitGroup、sync.Once 和 sync.Cond。但这些都是一些相对比较原始的同步机制。大多数情况下，我们应该使用抽象等级更高的 channel 实现同步。
+
+### 6.2.2 Mutex
+Golang 中的 Mutex 是由 state 和 sema 组成的。其中 state 是当前互斥锁的状态，而 sema 是用于控制锁状态的信号量。
+````golang
+type Mutex struct {
+	state int32
+	sema  uint32
+}
+````
+在状态中，其中最第三位分别是 mutexLocked、mutexWoken 和 mutexStarving，剩下的位置用来表示当前有多少个 Goroutine 在等待互斥锁的释放。
++ mutexLocked：表示互斥锁的锁定状态
++ mutexWoken：正常模式
+  + 锁的等待者会按照先进先出的顺序获取锁。但是刚被唤起的 Goroutine 与新创建的 Goroutine 竞争时，大概率会获取不到锁。
++ mutexStarving：表示现在互斥锁处在饥饿模式  
+  + 一旦 Goroutine 超过 1ms 没有获取到锁，互斥锁会直接交给等待队列最前面的 Goroutine。
+
+**方法：：**
++ Lock()：获取锁，若已被占用则阻塞。
++ Unlock()：释放锁。
+````golang
+var mu sync.Mutex
+var count int
+
+func increment(wg *sync.WaitGroup) {
+	defer wg.Done()
+	mu.Lock()
+	count++
+	mu.Unlock()
+}
+
+func main() {
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2) // 每次循环启动 2 个协程
+		go increment(&wg)
+		go increment(&wg)
+	}
+
+	wg.Wait() // 等待所有协程完成
+	fmt.Println(count)
+}
+````
+
+### 6.2.3 RWMutex
+它相比 Mutex，就是不限制读和读。
+|    | 读   | 写   |
+|----| ---- | ---- |
+|读 | Y    | N    |
+|写 | N    | N    |
+
+RWMutex的结构体有四个字段：
+````golang
+type RWMutex struct {
+	w           Mutex
+	writerSem   uint32
+	readerSem   uint32
+	readerCount int32
+	readerWait  int32
+}
+````
++ w： 复用互斥锁提供的能力
++ writerSem 和 readerSem：分别用于写等待读和读等待写
++ readerCount：存储了当前正在执行的读操作数量
++ readerWait：表示当写操作被阻塞时等待的读操作个数
+
+**方法 ：**
++ RLock()：获取读锁
++ RUnlock()：释放读锁
++ Lock()：获取写锁
++ Unlock()：释放写锁
+
+**关键步骤：**
++ 写锁的独占性
+  + rw.Lock() 会锁定写锁（w 字段的互斥锁），阻止其他读写操作
++ 读锁的并发性
+  + rw.RLock() 通过增加 readerCount 允许多个读操作并发执行
++ 写优先机制
+  + 当写操作因读操作未完成而阻塞时，新来的读操作会被禁止获取锁，直到所有当前读操作完成并唤醒写操作
++ 唤醒逻辑
+  + rw.Unlock() 释放写锁后，优先唤醒等待的写操作（若有），否则唤醒所有读操作
+  + rw.RUnlock() 在 readerCount 归零时唤醒写操作
+
+### 6.2.4 WaitGroup
+sync.WaitGroup 用于等待一组 goroutine 完成，解决主协程需要等待其他子协程执行完的场景。  
+waitGroup 的结构体有两个字段：
+````golang
+type WaitGroup struct {
+    noCopy noCopy
+    state1 [3]uint32
+}
+````
++ noCopy：保证 sync.WaitGroup 不会被开发者通过再赋值的方式拷贝
++ state1：保存着状态和信号量
+  + 当前活跃的  goroutine 数量
+  + 等待该 goroutine 的数量（及调用 wait 的数量）
+  + 一个信号量（semaphore），用于阻塞和唤醒goroutine
+
+**方法：**
++ Add(delta int)：（使用原子操作）
+  + 通过原子操作更新 state1[0]，增加或减少计数器。如果计数器变为负数，会触发panic。
+  + 若计数器归零，会通过信号量（state1[2]）唤醒所有等待的goroutine。
++ Done()：（使用原子操作）
+  + 实际调用 Add(-1)，减少计数器。当计数器归零时，触发唤醒逻辑。
++ Wait()：检查计数器是否为零。
+  + 若不为零，增加等待计数器（state1[1]），并阻塞当前goroutine，直到被信号量唤醒。
+  + 若计数器已为零，直接返回。
+  
+### 6.2.5 Once
+是一个用于确保某个操作仅执行一次的同步工具，它通过原子操作和互斥锁（Mutex）保证线程安全，且性能高效。适用于高并发场景下的初始化、资源加载或单例模式。  
+Once 的结构体有两个字段：
+````golang
+type Once struct {
+    done uint32  // 原子操作标记位
+    m    Mutex   // 互斥锁
+}
+````
++ done：使用 atomic.LoadUint32 快速检查是否已执行过。
++ Mutex：互斥锁
+
+**方法：**
++ Do(f func())：
+  + 如果传入的函数已经执行过，会直接返回。
+  + 如果传入的函数没有执行过，会调用 sync.Once.doSlow 执行传入的函数。
+	1. 为当前 Goroutine 获取互斥锁；
+	2. 执行传入的无入参函数；
+	3. 运行延迟函数调用，将成员变量 done 更新成 1；
+
+### 6.2.6 Cond
+是一个用于 goroutine 之间同步的机制。可以让一组的 Goroutine 都在满足特定条件时被唤醒。  
+Cond 的结构体有两个字段：
+````golang
+type Cond struct {
+    noCopy noCopy
+    L      Locker
+}
+````
++ L Locker：条件变量绑定的锁。
++ noCopy：防止条件变量被复制，避免潜在的错误。
+
+**方法：**
++ Wait()：当前 goroutine 释放锁并进入等待状态，直到被其他 goroutine 唤醒。
+  + 调用 Wait() 时，必须先持有锁（即调用 L.Lock()）。
+  + Wait() 会自动释放锁，并将当前 goroutine 挂起。
+  + 当被唤醒时，Wait() 会重新获取锁并继续执行。
++ Signal()：唤醒一个正在等待的 goroutine（如果有多个等待的 goroutine，则随机选择一个）。
+  + 如果没有 goroutine 在等待，Signal() 不会有任何效果。
++ Broadcast()
+  + 唤醒所有正在等待的 goroutine
+
+**使用步骤：**  
++ 使用 sync.Cond 的典型步骤如下：
+	1. 创建条件变量，并绑定一个锁。
+	2. 在需要等待的 goroutine 中调用 Wait()。
+	3. 在条件满足时，调用 Signal() 或 Broadcast() 唤醒等待的 goroutine。
