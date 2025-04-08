@@ -2,7 +2,7 @@
 
 ## 基本操作
 ### 1. 创建与初始化
-**1. 使用 make 创建空 map**
+**1. 使用 `make` 创建空 `map`**
 ````golang
 m := make(map[string]int) // 创建一个空 map
 ````
@@ -49,7 +49,7 @@ fmt.Println(age)
 ````
 
 ### 4. 删除键值对
-使用 delete 函数删除指定键：  
+使用 `delete` 函数删除指定键：  
 ````golang
 delete(m, "Bob") // 删除键 "Bob"
 ````
@@ -57,7 +57,7 @@ delete(m, "Bob") // 删除键 "Bob"
 + 删除不存在的键不会报错，也不会影响其他键值对
 
 ### 5. 遍历
-使用 for range 遍历所有键值对：
+使用 `for range` 遍历所有键值对：
 ````golang
 for key, value := range m {
     fmt.Printf("%s: %d\n", key, value)
@@ -75,9 +75,33 @@ for key, value := range m {
   for _, key := range keys {
       fmt.Printf("%s: %d\n", key, m[key])
   }
-  ````
+  ````  
+
+指遍历键：  
+````golang
+for key := range m {
+    // 处理键
+}
+````
 
 ### 6. 获取长度
 使用 `len` 函数获取 `map` 中键值对的数量。  
 特点 ：
 时间复杂度为 O(1)，快速返回当前元素数量。
+
+### 7. 进阶操作
+**1. 获取键值集合：**  
++ `map.Keys`：返回 `map` 中所有键。
++ `map.Values`：返回 `map` 中所有值。
+
+**2. 比较两个 `map`：**
++ `map.Equal`：判断两个 `map` 是否相等（键值对都相等）
++ `map.EqualFunc`：通过自定义比较函数来判断两个 `map` 是否相等
+
+**3. 克隆与复制：**
++ `map.Clone`：深拷贝一个 `map`
++ `maps.Copy` ：将一个 `map` 的内容复制到另一个 `map`
+
+**4. 过滤与转换：**
++ `maps.DeleteFunc`：根据条件删除键值对
++ `maps.Transform`：对 `map` 的值进行原地修改
