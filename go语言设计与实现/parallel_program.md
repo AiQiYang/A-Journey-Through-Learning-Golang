@@ -87,6 +87,7 @@ func main() {
 ## 6.1.3 小结
 Go 语言中的 context.Context 的主要作用还是在多个 Goroutine 组成的树中同步取消信号以减少对资源的消耗和占用，虽然它也有传值的功能，但是这个功能我们还是很少用到。
 
+
 ## 6.2 同步原语和锁
 Golang 作为一个原生支持用户态进程的语言，当提到并发，肯定少不了锁。锁是并发编程中的同步原语。
 
@@ -246,3 +247,96 @@ type Cond struct {
 	1. 创建条件变量，并绑定一个锁。
 	2. 在需要等待的 goroutine 中调用 Wait()。
 	3. 在条件满足时，调用 Signal() 或 Broadcast() 唤醒等待的 goroutine。
+
+
+## 6.3 计时器
+Golang 中的计时器主要用于控制代码执行的时间逻辑，支持单次(Timer)或周期性(Ticker)任务触发。
+
+### 6.3.1 计时器类型
+1. Timer
+   + 功能 ：在指定时间后触发一次事件，通过 time.Timer 实现。
+   + 重置与停止 ：
+		+ Reset()：可重置计时器时间。
+		+ Stop()：停止计时器并释放资源，避免 goroutine 泄漏。
+   + 适用场景 ：超时控制（如 HTTP 请求）、延迟任务（如缓存失效）。
+2. Ticker
+	+ 功能 ：按固定间隔重复触发事件，通过 time.Ticker 实现。
+	+ 创建方式 ：
+		````go
+		ticker := time.NewTicker(1 * time.Second)
+        for t := range ticker.C {
+            fmt.Println("Tick at", t)
+        }
+		````
+	+ 停止 ：调用 Stop() 终止周期行为.
+	+ 适用场景：周期性任务（如日志轮转、状态检查）。
+
+### 6.3.2 关键特性与注意事项
++ 资源管理 ：
+  + 必须调用 Stop() 停止未使用的 Timer，否则可能导致 goroutine 泄漏。
+  + Ticker 在不再需要时也需显式停止。
++ 时间精度 ：
+  + Go 计时器基于单调时钟，避免受系统时间调整影响。
+  + 实际触发时间可能因调度延迟略晚于设定值。
+
+
+## 6.4 Channel
+Channel 是实现并发编程的核心机制，用于在 Goroutine 之间安全的传输数据和同步操作。
+
+### 6.4.1 设计原理
+Golang 的并发设计原理是不要通过共享内存的方式进行通信，而是应该通过通信的方式共享内存。即通信顺序进程（Communicating sequential processes，CSP）。Goroutine 和 Channel 分别对应 CSP 中的实体和传递信息的媒介，Goroutine 之间会通过 Channel 传递数据。
+
+**1. 先入先出**
+目前的 Channel 收发操作均遵循了先进先出的设计，具体规则如下：
++ 先从 Channel 读取数据的 Goroutine 会先接收到数据。
++ 先向 Channel 发送数据的 Goroutine 会得到先发送数据的权利。  
+
+**2. 缓冲区**
+同步与异步 ：
++ 无缓冲 Channel ：发送和接收操作需配对，否则会阻塞（同步通信）。
++ 有缓冲 Channel ：缓冲区未满时发送非阻塞，缓冲区未空时接收非阻塞（异步通信）。
+
+### 6.4.2 数据结构
+Golang 的 channel 在运行时使用 runtime.hchan 结构体来表现。
+````golang
+type hchan struct {
+	qcount   uint
+	dataqsiz uint
+	buf      unsafe.Pointer
+	elemsize uint16
+	closed   uint32
+	elemtype *_type
+	sendx    uint
+	recvx    uint
+	recvq    waitq
+	sendq    waitq
+
+	lock mutex
+}
+````
++ qcount：Channel 中的元素个数；
++ dataqsiz：Channel 中的循环队列的长度；
++ buf：Channel 的缓冲区数据指针；
++ sendx：Channel 的发送操作处理到的位置；
++ recvx：Channel 的接收操作处理到的位置；
++ elemsize：当前 Channel 能够收发的元素类型
++ elemtype：当前 Channel 能够收发的元素大小
++ sendq 和 recvq：当前 Channel 由于缓冲区空间不足而阻塞的 Goroutine 列表
+
+### 6.4.3 创建与使用方式
+**声明与初始化：**
+````golang
+// 无缓冲 Channel（同步）
+ch1 := make(chan int)
+
+// 有缓冲 Channel（异步，容量为 5）
+ch2 := make(chan string, 5)
+````
+未初始化的 Channel 无法直接使用，读写会引发死锁。  
+**使用方式：**  
++ 发送数据 ：
+  + ch <- value 将值写入 Channel，若缓冲区满或无缓冲则阻塞。  
++ 接收数据 ：
+  + value := <-ch 从 Channel 读取值，若无数据则阻塞。  
++ 关闭 Channel ：
+  + close(ch) 通知接收方无更多数据，重复关闭会引发 panic。
